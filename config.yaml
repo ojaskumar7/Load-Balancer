@@ -11,6 +11,7 @@ health_check:
 
 connect_timeout_seconds: 3
 max_retries: 2
+idle_timeout_seconds: 60
 shutdown_grace_seconds: 10
 
 backends:

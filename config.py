@@ -41,6 +41,7 @@ class Config:
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     connect_timeout_seconds: float = 3.0
     max_retries: int = 2
+    idle_timeout_seconds: float = 60.0
     shutdown_grace_seconds: float = 10.0
 
 
@@ -137,6 +138,10 @@ def parse_config(data: dict) -> Config:
     if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 0:
         raise ConfigError(f"'max_retries' must be an integer >= 0, got {max_retries!r}")
 
+    idle_timeout = _positive(
+        data.get("idle_timeout_seconds", 60.0), "idle_timeout_seconds"
+    )
+
     shutdown_grace = _positive(
         data.get("shutdown_grace_seconds", 10.0),
         "shutdown_grace_seconds",
@@ -150,6 +155,7 @@ def parse_config(data: dict) -> Config:
         health_check=_parse_health_check(data.get("health_check")),
         connect_timeout_seconds=connect_timeout,
         max_retries=max_retries,
+        idle_timeout_seconds=idle_timeout,
         shutdown_grace_seconds=shutdown_grace,
     )
 
