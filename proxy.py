@@ -65,7 +65,9 @@ async def handle_client(
             _close(client_writer)
             return
 
-        logger.info("proxying %s <-> %s", peer, backend.name)
+        logger.info(
+            "proxying %s <-> %s (active=%d)", peer, backend.name, backend.active_connections
+        )
         await asyncio.gather(
             _pump(client_reader, backend_writer),
             _pump(backend_reader, client_writer),
