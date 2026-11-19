@@ -6,6 +6,7 @@ import logging
 from backend import Backend
 from config import load_config
 from proxy import handle_client
+from strategies import HybridCapped
 
 logger = logging.getLogger(__name__)
 
@@ -13,9 +14,10 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     config = load_config("config.yaml")
     backends = [Backend(b.host, b.port) for b in config.backends]
+    strategy = HybridCapped()
 
     def select_backend() -> Backend | None:
-        return backends[0]
+        return strategy.select(backends, config.max_cap)
 
     server = await asyncio.start_server(
         lambda reader, writer: handle_client(reader, writer, select_backend, config),
