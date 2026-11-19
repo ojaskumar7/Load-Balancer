@@ -5,6 +5,7 @@ import logging
 
 from backend import Backend
 from config import load_config
+from health import HealthChecker
 from proxy import handle_client
 from strategies import HybridCapped
 
@@ -19,6 +20,9 @@ async def main() -> None:
     def select_backend() -> Backend | None:
         return strategy.select(backends, config.max_cap)
 
+    health_checker = HealthChecker(backends, config.health_check)
+    await health_checker.check_once()
+
     server = await asyncio.start_server(
         lambda reader, writer: handle_client(reader, writer, select_backend, config),
         config.listen.host,
@@ -27,8 +31,16 @@ async def main() -> None:
     addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     logger.info("listening on %s", addresses)
 
-    async with server:
-        await server.serve_forever()
+    health_task = asyncio.create_task(health_checker.run(), name="health-checker")
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        health_task.cancel()
+        try:
+            await health_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
