@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 STATS_INTERVAL_SECONDS = 10.0
 
 
+def _log_fd_limit() -> None:
+    try:
+        import resource
+    except ImportError:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return
+    logger.info("file descriptor limit: soft=%s hard=%s", soft, hard)
+    if soft != resource.RLIM_INFINITY and soft < 4096:
+        logger.warning(
+            "low file descriptor limit (%s); each proxied connection needs 2 sockets",
+            soft,
+        )
+
+
 async def log_stats(backends: list[Backend]) -> None:
     while True:
         await asyncio.sleep(STATS_INTERVAL_SECONDS)
@@ -34,6 +51,7 @@ async def _cancel_tasks(tasks: list[asyncio.Task]) -> None:
 
 
 async def main() -> None:
+    _log_fd_limit()
     config = load_config("config.yaml")
     backends = [Backend(b.host, b.port) for b in config.backends]
     strategy = HybridCapped()
@@ -59,9 +77,10 @@ async def main() -> None:
         if stop_event.is_set():
             writer.close()
             return
+        conn_id = next(client_ids)
         task = asyncio.create_task(
-            handle_client(reader, writer, select_backend, config),
-            name=f"client-{next(client_ids)}",
+            handle_client(reader, writer, conn_id, select_backend, config, backends),
+            name=f"conn-{conn_id}",
         )
         connection_tasks.add(task)
         task.add_done_callback(connection_tasks.discard)
@@ -70,6 +89,7 @@ async def main() -> None:
         on_client,
         config.listen.host,
         config.listen.port,
+        reuse_address=True,
     )
     addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     logger.info("listening on %s", addresses)
