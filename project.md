@@ -1,7 +1,5 @@
 # Python Load Balancer: Level 0 + Level 1 Plan
 
-Since the code will be written by you, this plan works as a build guide: what each piece does, how it behaves, and what order to build it in.
-
 ## Assumptions
 - **Algorithm switching:** Round robin is the default. If the backend round robin would pick is at `max_cap`, skip it and choose the healthy backend with the fewest active connections (least connections). If every backend is at cap, reject the client connection (close it and log it) rather than queue it.
 - Python 3.11+, `asyncio`, `pyyaml`, basic `logging`, no tests or CLI.
