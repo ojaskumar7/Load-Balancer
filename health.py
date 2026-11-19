@@ -40,7 +40,6 @@ class HealthChecker:
         await asyncio.gather(*(self._check(backend) for backend in self._backends))
 
     async def run(self) -> None:
-        await self.check_once()
         while True:
             await asyncio.sleep(self._config.interval_seconds)
             await self.check_once()

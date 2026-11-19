@@ -26,8 +26,8 @@ async def main() -> None:
     backends = [Backend(b.host, b.port) for b in config.backends]
     strategy = HybridCapped()
 
-    def select_backend() -> Backend | None:
-        return strategy.select(backends, config.max_cap)
+    def select_backend(exclude: set[str] | None = None) -> Backend | None:
+        return strategy.select(backends, config.max_cap, exclude)
 
     health_checker = HealthChecker(backends, config.health_check)
     await health_checker.check_once()

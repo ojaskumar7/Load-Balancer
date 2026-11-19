@@ -42,27 +42,47 @@ def _close(writer: asyncio.StreamWriter | None) -> None:
 async def handle_client(
     client_reader: asyncio.StreamReader,
     client_writer: asyncio.StreamWriter,
-    select_backend: Callable[[], Backend | None],
+    select_backend: Callable[[set[str]], Backend | None],
     config: Config,
 ) -> None:
     peer = client_writer.get_extra_info("peername")
-    backend = select_backend()
-    if backend is None:
-        logger.warning("no backend available, closing client %s", peer)
-        _close(client_writer)
-        return
-
-    backend.reserve()
+    tried: set[str] = set()
+    backend: Backend | None = None
+    backend_reader: asyncio.StreamReader | None = None
     backend_writer: asyncio.StreamWriter | None = None
+    reserved = False
+
     try:
-        try:
-            backend_reader, backend_writer = await asyncio.wait_for(
-                asyncio.open_connection(backend.host, backend.port),
-                timeout=config.connect_timeout_seconds,
-            )
-        except (OSError, asyncio.TimeoutError) as exc:
-            logger.warning("cannot connect to %s: %s", backend.name, exc)
-            _close(client_writer)
+        for _ in range(1 + config.max_retries):
+            backend = select_backend(tried)
+            if backend is None:
+                logger.warning(
+                    "no backend available for client %s (tried=%s)", peer, sorted(tried) or "none"
+                )
+                return
+
+            backend.reserve()
+            reserved = True
+            try:
+                backend_reader, backend_writer = await asyncio.wait_for(
+                    asyncio.open_connection(backend.host, backend.port),
+                    timeout=config.connect_timeout_seconds,
+                )
+            except (OSError, asyncio.TimeoutError) as exc:
+                backend.release()
+                reserved = False
+                backend_writer = None
+                tried.add(backend.name)
+                if backend.record_failure(config.health_check.failure_threshold):
+                    logger.warning("backend %s marked down: %s", backend.name, exc)
+                else:
+                    logger.warning("connect to %s failed: %s", backend.name, exc)
+                backend = None
+                continue
+            break
+
+        if backend is None:
+            logger.warning("all connect attempts failed for client %s", peer)
             return
 
         logger.info(
@@ -75,4 +95,5 @@ async def handle_client(
     finally:
         _close(backend_writer)
         _close(client_writer)
-        backend.release()
+        if reserved and backend is not None:
+            backend.release()
