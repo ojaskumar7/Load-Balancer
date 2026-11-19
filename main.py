@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
+import signal
 
 from backend import Backend
 from config import load_config
@@ -21,6 +23,16 @@ async def log_stats(backends: list[Backend]) -> None:
             logger.info("stats %s", backend.stats())
 
 
+async def _cancel_tasks(tasks: list[asyncio.Task]) -> None:
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
 async def main() -> None:
     config = load_config("config.yaml")
     backends = [Backend(b.host, b.port) for b in config.backends]
@@ -32,8 +44,30 @@ async def main() -> None:
     health_checker = HealthChecker(backends, config.health_check)
     await health_checker.check_once()
 
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, stop_event.set)
+        except (NotImplementedError, RuntimeError):
+            logger.warning("signal handlers unavailable for %s", sig.name)
+
+    connection_tasks: set[asyncio.Task] = set()
+    client_ids = itertools.count(1)
+
+    def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if stop_event.is_set():
+            writer.close()
+            return
+        task = asyncio.create_task(
+            handle_client(reader, writer, select_backend, config),
+            name=f"client-{next(client_ids)}",
+        )
+        connection_tasks.add(task)
+        task.add_done_callback(connection_tasks.discard)
+
     server = await asyncio.start_server(
-        lambda reader, writer: handle_client(reader, writer, select_backend, config),
+        on_client,
         config.listen.host,
         config.listen.port,
     )
@@ -42,17 +76,29 @@ async def main() -> None:
 
     health_task = asyncio.create_task(health_checker.run(), name="health-checker")
     stats_task = asyncio.create_task(log_stats(backends), name="stats")
+
     try:
-        async with server:
-            await server.serve_forever()
+        await stop_event.wait()
+        logger.info("shutdown requested, no longer accepting connections")
     finally:
-        for task in (health_task, stats_task):
-            task.cancel()
-        for task in (health_task, stats_task):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        server.close()
+        await _cancel_tasks([health_task, stats_task])
+
+        if connection_tasks:
+            logger.info(
+                "waiting up to %ss for %d in-flight connection(s)",
+                config.shutdown_grace_seconds,
+                len(connection_tasks),
+            )
+            _, pending = await asyncio.wait(
+                set(connection_tasks),
+                timeout=config.shutdown_grace_seconds,
+            )
+            if pending:
+                logger.warning("cancelling %d connection(s) after grace period", len(pending))
+                await _cancel_tasks(list(pending))
+
+        logger.info("shutdown complete")
 
 
 if __name__ == "__main__":
