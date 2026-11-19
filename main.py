@@ -11,6 +11,15 @@ from strategies import HybridCapped
 
 logger = logging.getLogger(__name__)
 
+STATS_INTERVAL_SECONDS = 10.0
+
+
+async def log_stats(backends: list[Backend]) -> None:
+    while True:
+        await asyncio.sleep(STATS_INTERVAL_SECONDS)
+        for backend in backends:
+            logger.info("stats %s", backend.stats())
+
 
 async def main() -> None:
     config = load_config("config.yaml")
@@ -32,15 +41,18 @@ async def main() -> None:
     logger.info("listening on %s", addresses)
 
     health_task = asyncio.create_task(health_checker.run(), name="health-checker")
+    stats_task = asyncio.create_task(log_stats(backends), name="stats")
     try:
         async with server:
             await server.serve_forever()
     finally:
-        health_task.cancel()
-        try:
-            await health_task
-        except asyncio.CancelledError:
-            pass
+        for task in (health_task, stats_task):
+            task.cancel()
+        for task in (health_task, stats_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 if __name__ == "__main__":
